@@ -1,7 +1,5 @@
-use crate::query::ast::{
-    ArrayIndex, Field, FieldOperator, InnerField, LeafValue, MemberAccess, Operator, Predicate,
-    Variable, VariablePath,
-};
+use smartstring::alias::String;
+use crate::query::ast::{AndOperator, ArrayIndex, BetweenOperator, Field, FieldOperator, GteOperator, InnerField, InOperator, LeafValue, LteOperator, MemberAccess, NeOperator, NotOperator, Operator, OrOperator, Predicate, Value, Variable, VariablePath};
 use nom::branch::alt;
 use nom::bytes::complete::{escaped, escaped_transform, is_not, tag, take};
 use nom::character::complete::{
@@ -18,10 +16,13 @@ use nom::number::complete::double;
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
 
 use nom::{error, IResult, Parser};
-use serde_json::{Number, Value};
 
 use std::iter::once;
 use std::ops::{Deref, Range};
+use hashlink::LinkedHashMap;
+use crate::Number;
+use crate::query::ast::{EqOperator, GtOperator, LtOperator};
+use crate::query::ast::parser::{arguments, expression};
 
 const HIGH_SURROGATES: Range<u16> = 0xd800..0xdc00;
 pub fn ws<'a, O, E: ParseError<&'a str>>(
@@ -32,22 +33,23 @@ pub fn ws<'a, O, E: ParseError<&'a str>>(
 
 pub fn predicate(str: &str) -> IResult<&str, Predicate> {
     alt((
-        map(leaf, Predicate::Leaf),
         map(operators, Predicate::Operators),
+        map(leaf, Predicate::Leaf),
     ))(str)
 }
 
 pub fn leaf(str: &str) -> IResult<&str, LeafValue> {
-    alt((map(number, LeafValue::from), map(string, LeafValue::from)))(str)
+    map(value, LeafValue::from)(str)
 }
 
 pub fn value(str: &str) -> IResult<&str, Value> {
     alt((
-        map(number, serde_json::Value::from),
-        map(string, serde_json::Value::from),
-        map(array, serde_json::Value::from),
-        map(object, serde_json::Value::from),
-        map(null, |_| serde_json::Value::Null),
+        map(number, Value::from),
+        map(string, Value::from),
+        map(boolean,Value::from),
+        map(array, Value::from),
+        map(object, Value::from),
+        map(null, |_|Value::Null),
     ))(str)
 }
 
@@ -62,9 +64,95 @@ pub fn operators(str: &str) -> IResult<&str, Vec<Operator>> {
 pub fn operator(str: &str) -> IResult<&str, Operator> {
     alt((
         map(field_operator, Operator::from),
-        map(field_operator, Operator::from),
+        map(gt_operator, Operator::from),
+        map(gte_operator, Operator::from),
+        map(lt_operator, Operator::from),
+        map(lte_operator, Operator::from),
+        map(between_operator, Operator::from),
+        map(eq_operator, Operator::from),
+        map(ne_operator, Operator::from),
+        map(in_operator, Operator::from),
+        map(not_operator, Operator::from),
+        map(and_operator, Operator::from),
+        map(or_operator, Operator::from),
     ))(str)
 }
+
+pub fn gt_operator(str: &str) -> IResult<&str, GtOperator> {
+    map(
+        operator_pair("$gt", cut(value)),
+        GtOperator::from,
+    )(str)
+}
+
+pub fn gte_operator(str: &str) -> IResult<&str, GteOperator> {
+    map(
+        operator_pair("$gte", cut(value)),
+        GteOperator::from,
+    )(str)
+}
+
+pub fn lt_operator(str: &str) -> IResult<&str, LtOperator> {
+    map(
+        operator_pair("$lt", cut(value)),
+        LtOperator::from,
+    )(str)
+}
+
+pub fn lte_operator(str: &str) -> IResult<&str, LteOperator> {
+    map(
+        operator_pair("$lte", cut(value)),
+        LteOperator::from,
+    )(str)
+}
+
+pub fn eq_operator(str: &str) -> IResult<&str, EqOperator> {
+    map(
+        operator_pair("$eq", cut(value)),
+        EqOperator::from,
+    )(str)
+}
+pub fn ne_operator(str: &str) -> IResult<&str, NeOperator> {
+    map(
+        operator_pair("$ne", cut(value)),
+        NeOperator::from,
+    )(str)
+}
+
+pub fn between_operator(str: &str) -> IResult<&str, BetweenOperator> {
+    map(
+        operator_pair("$between", cut(arguments((value, value)))),
+        BetweenOperator::from,
+    )(str)
+}
+
+pub fn in_operator(str: &str) -> IResult<&str, InOperator> {
+    map(
+        operator_pair("$in", cut(array)),
+        InOperator::from,
+    )(str)
+}
+
+pub fn not_operator(str: &str) -> IResult<&str, NotOperator> {
+    map(
+        operator_pair("$not", cut(predicate)),
+        NotOperator::from,
+    )(str)
+}
+pub fn and_operator(str: &str) -> IResult<&str, AndOperator> {
+    map(
+        operator_pair("$and", cut(array_of(predicate))),
+        AndOperator::from,
+    )(str)
+}
+
+pub fn or_operator(str: &str) -> IResult<&str, OrOperator> {
+    map(
+        operator_pair("$or", cut(array_of(predicate))),
+        OrOperator::from,
+    )(str)
+}
+
 
 pub fn operator_pair<'a, O, E: ParseError<&'a str>>(
     name: &'a str,
@@ -89,6 +177,22 @@ pub fn array_of<'a, O, E: ParseError<&'a str>>(
     )
 }
 
+pub fn object_of<'a, O>(
+    element: impl Parser<&'a str, O, nom::error::Error<&'a str>>,
+) -> impl FnMut(&'a str) -> IResult<&'a str, LinkedHashMap<String, O>, error::Error<&'a str>> {
+    map(
+        delimited(
+            ws(character('{')),
+            separated_list0(
+                ws(character(',')),
+                separated_pair(ws(string), character(':'), ws(element)),
+            ),
+            cut(ws(character('}'))),
+        ),
+        FromIterator::from_iter,
+    )
+}
+
 pub fn field_operator(str: &str) -> IResult<&str, FieldOperator> {
     map(
         separated_pair(ws(field), character(':'), ws(predicate)),
@@ -106,7 +210,7 @@ pub fn field_path(str: &str) -> IResult<&str, VariablePath> {
     flat_map(is_not(".[]"), |str: &str| {
         fold_many0(
             preceded(not(eof), cut(inner_field)),
-            || VariablePath::BaseVariable(Variable::from(str.to_string())),
+            move || VariablePath::BaseVariable(Variable::from(str)),
             |base, field| VariablePath::InnerField {
                 base: Box::new(base),
                 field,
@@ -118,7 +222,7 @@ pub fn inner_field(str: &str) -> IResult<&str, InnerField, error::Error<&str>> {
     alt((
         map(preceded(character('.'), is_not(".[]")), |member: &str| {
             InnerField::MemberAccess(MemberAccess {
-                member: member.to_string(),
+                member: member.into(),
             })
         }),
         map(
@@ -132,7 +236,7 @@ pub fn inner_field(str: &str) -> IResult<&str, InnerField, error::Error<&str>> {
     ))(str)
 }
 
-pub fn array(str: &str) -> IResult<&str, Vec<serde_json::Value>> {
+pub fn array(str: &str) -> IResult<&str, Vec<Value>> {
     array_of(value)(str)
 }
 
@@ -140,7 +244,7 @@ pub fn null(str: &str) -> IResult<&str, ()> {
     get_value((), ws(tag("null")))(str)
 }
 
-pub fn object(str: &str) -> IResult<&str, serde_json::Map<String, Value>> {
+pub fn object(str: &str) -> IResult<&str, LinkedHashMap<String, Value>> {
     map(
         delimited(
             ws(character('{')),
@@ -157,7 +261,14 @@ pub fn object(str: &str) -> IResult<&str, serde_json::Map<String, Value>> {
 pub fn number(str: &str) -> IResult<&str, Number> {
     alt((
         map(terminated(i64, not(one_of(".eE"))), Number::from),
-        map_opt(double, Number::from_f64),
+        map(double, Number::from),
+    ))(str)
+}
+
+pub fn boolean(str: &str) -> IResult<&str, bool> {
+    alt((
+        get_value(false, ws(tag("false"))),
+        get_value(true, ws(tag("true")))
     ))(str)
 }
 
@@ -193,7 +304,7 @@ pub fn unescape_string(str: &str) -> IResult<&str, String> {
             '\\',
             alt((unescape_character_inner, unescape_codepoint_inner)),
         )),
-        Option::unwrap_or_default,
+        |x| x.unwrap_or_default().into()
     )(str)
 }
 
@@ -245,3 +356,4 @@ pub fn unicode_codepoint(str: &str) -> IResult<&str, u16> {
 pub fn unescape_character(str: &str) -> IResult<&str, char> {
     preceded(character('\\'), unescape_character_inner)(str)
 }
+

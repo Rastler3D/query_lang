@@ -1,17 +1,14 @@
-use crate::query::ast::expression::{
-    ExprFieldPath, ExprLiteral, ExprOperator, ExprVariable, Expression,
-};
-use crate::query::ast::operators::parser::{eq_operator_expr, gt_operator_expr, lt_operator_expr};
-use crate::query::ast::operators::{EqOperator, GtOperator, LtOperator};
-use crate::query::parser::{array_of, escaped_string, field_path, object, value, ws};
+use crate::query::ast::expression::{ExprFieldPath, ExprLiteral, ExprOperator, ExprVariable, Expression, NullLiteral, NumberLiteral, StringLiteral, BoolLiteral, ArrayLiteral, ObjectLiteral};
+use crate::query::ast::operators::parser::{eq_operator_expr, gt_operator_expr, lt_operator_expr, match_operator_expr};
+use crate::query::parser::{array_of, escaped_string, field_path, number, object, object_of, string, boolean, ws, predicate};
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::char;
-use nom::combinator::{cut, map, map_parser, map_res};
-use nom::multi::separated_list1;
-use nom::sequence::{delimited, preceded, tuple};
+use nom::combinator::{all_consuming, cut, map, map_parser, peek, verify};
+use nom::sequence::{delimited, preceded};
 use nom::IResult;
-use serde_json::Value;
+use crate::query::ast::Predicate;
+use crate::query::Script;
 use crate::query::utils::{separated_permutation, separated_tuple, SeparatedPermutation, SeparatedTuple};
 
 pub fn arguments<'a, O>(args: impl SeparatedTuple<&'a str, O, nom::error::Error<&'a str>>) -> impl FnMut(&'a str) -> IResult<&'a str, O> {
@@ -30,6 +27,14 @@ pub fn named_arguments<'a, O>(args: impl SeparatedPermutation<&'a str, O, nom::e
     )
 }
 
+pub fn script(str: &str) -> IResult<&str, Script>{
+    map(all_consuming(ws(expression)), Script::from)(str)
+}
+
+pub fn parse_predicate(str: &str) -> IResult<&str, Predicate>{
+    all_consuming(ws(predicate))(str)
+}
+
 pub fn expression(str: &str) -> IResult<&str, Expression> {
     alt((
         map(variable_expr, Expression::from),
@@ -40,17 +45,49 @@ pub fn expression(str: &str) -> IResult<&str, Expression> {
 }
 
 fn literal_expr(str: &str) -> IResult<&str, ExprLiteral> {
-    map(value, ExprLiteral::from)(str)
+    alt((
+        map(null_literal, ExprLiteral::from),
+        map(number_literal, ExprLiteral::from),
+        map(bool_literal, ExprLiteral::from),
+        map(string_literal, ExprLiteral::from),
+        map(array_literal, ExprLiteral::from),
+        map(object_literal, ExprLiteral::from),
+    ))(str)
+}
+
+fn null_literal(str: &str) -> IResult<&str, NullLiteral>{
+    map(ws(tag("null")), |_| NullLiteral)(str)
+}
+
+fn number_literal(str: &str) -> IResult<&str, NumberLiteral>{
+    map(ws(number), NumberLiteral::from)(str)
+}
+
+fn string_literal(str: &str) -> IResult<&str, StringLiteral>{
+    map(ws(string), StringLiteral::from)(str)
+}
+
+fn bool_literal(str: &str) -> IResult<&str, BoolLiteral>{
+    map(ws(boolean), BoolLiteral::from)(str)
+}
+
+fn array_literal(str: &str) -> IResult<&str, ArrayLiteral>{
+    map(ws(array_of(expression)), ArrayLiteral::from)(str)
+}
+
+fn object_literal(str: &str) -> IResult<&str, ObjectLiteral>{
+    map(ws(object_of(expression)), ObjectLiteral::from)(str)
 }
 
 fn operator_expr(str: &str) -> IResult<&str, ExprOperator> {
     delimited(
-        ws(char('{')),
-        alt((
+        preceded(ws(char('{')), verify(peek(escaped_string), |str: &str| str.starts_with('$'))),
+        cut(alt((
             map(gt_operator_expr, ExprOperator::from),
             map(lt_operator_expr, ExprOperator::from),
             map(eq_operator_expr, ExprOperator::from),
-        )),
+            map(match_operator_expr, ExprOperator::from)
+        ))),
         ws(char('}')),
     )(str)
 }
@@ -58,14 +95,14 @@ fn operator_expr(str: &str) -> IResult<&str, ExprOperator> {
 fn field_path_expr(str: &str) -> IResult<&str, ExprFieldPath> {
     map_parser(
         escaped_string,
-        map(preceded(char('$'), field_path), ExprFieldPath::from),
+        map(preceded(char('$'), cut(field_path)), ExprFieldPath::from),
     )(str)
 }
 
 fn variable_expr(str: &str) -> IResult<&str, ExprVariable> {
     map_parser(
         escaped_string,
-        map(preceded(tag("$$"), field_path), ExprVariable::from),
+        map(preceded(tag("$$"), cut(field_path)), ExprVariable::from),
     )(str)
 }
 

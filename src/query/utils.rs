@@ -1,6 +1,5 @@
 use nom::{IResult, Parser};
 use nom::error::ParseError;
-use nom::sequence::{preceded, terminated, tuple};
 use nom::error::ErrorKind;
 use nom::Err;
 
@@ -17,7 +16,7 @@ macro_rules! impl_sep_tuple {
    () => {
         impl<I,Err: ParseError<I>> SeparatedTuple<I,(),Err> for ()
         {
-            fn parse<U, S: Parser<I,U,Err>>((): &mut Self, separator: &mut S, input: I) -> IResult<I, (), Err> {
+            fn parse<U, S: Parser<I,U,Err>>((): &mut Self, _: &mut S, input: I) -> IResult<I, (), Err> {
                 Ok((input, ()))
             }
         }
@@ -28,7 +27,7 @@ macro_rules! impl_sep_tuple {
         paste::paste!{
             impl<[<Out $t0>], $([<Out $tn>],)* $t0: Parser<Input,[<Out $t0>],Err>, $($tn: Parser<Input,[<Out $tn>],Err>,)* Input,Err: ParseError<Input>> SeparatedTuple<Input,([<Out $t0>], $([<Out $tn>],)*), Err> for ($t0, $($tn,)*)
             {
-                fn parse<U, S: Parser<Input,U,Err>>((ref mut [<$t0:lower>], $(ref mut [<$tn:lower>],)*): &mut Self, mut separator: &mut S, input: Input) -> IResult<Input, ([<Out $t0>], $([<Out $tn>],)*), Err> {
+                fn parse<U, S: Parser<Input,U,Err>>((ref mut [<$t0:lower>], $(ref mut [<$tn:lower>],)*): &mut Self, #[allow(unused_variables,unused_mut)] mut separator: &mut S, input: Input) -> IResult<Input, ([<Out $t0>], $([<Out $tn>],)*), Err> {
                     let (input, [<$t0:lower>]) = [<$t0:lower>].parse(input)?;
                     $(
                         let (input, _) = separator.parse(input)?;
@@ -76,14 +75,14 @@ macro_rules! impl_sep_permutation_inner {
         paste::paste!{
             impl<$([<Out $tn>],)+ $($tn: Parser<Input,[<Out $tn>],Error>,)+ Input: Clone,Error: ParseError<Input>> SeparatedPermutation<Input,($([<Out $tn>],)*), Error> for ($($tn,)*)
             {
-                fn permutation<U, S: Parser<Input,U,Error>>(($(ref mut [<$tn:lower>],)*): &mut Self, mut separator: &mut S, mut input: Input) -> IResult<Input, ($([<Out $tn>],)*), Error> {
+                fn permutation<U, S: Parser<Input,U,Error>>(($(ref mut [<$tn:lower>],)*): &mut Self, #[allow(unused_variables,unused_mut)] mut separator: &mut S, mut input: Input) -> IResult<Input, ($([<Out $tn>],)*), Error> {
                     $(
                     let mut [<res_ $tn:lower>] = Option::<[<Out $tn>]>::None;
                     )*
                     let mut first = true;
                     loop {
-                        match ($(&[<res_ $tn:lower>]),+) {
-                            ($(Some([<res_ $tn:lower>])),+) => break,
+                        match ($(&[<res_ $tn:lower>],)+) {
+                            ($(Some([<_res_ $tn:lower>]),)+) => break,
                             _  if !first => {
                                 (input,_) = separator.parse(input)?;
                             },
