@@ -59,7 +59,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             }
         }))
     ]))))));
-   //println!("{:?}", vec.first());
 }
 
 
